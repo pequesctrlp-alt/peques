@@ -1898,6 +1898,7 @@ let catalogProductIds = []; // IDs del banco que componen el catálogo PDF actua
 let pickerSelection = new Set(); // selección temporal en modal
 let pickerActiveCat = 'all';
 let editingProductId = null; // si !=null estamos editando un producto del banco
+let deletedProductIds = []; // v1.25.15: tombstones — IDs de productos borrados, para que el merge nube↔local no los "resucite"
 let currentItemsKind = 'catalogs'; // 'products' | 'catalogs' | 'proformas' | 'publications'
 let editingCatalogId = null; // si !=null estamos editando un catálogo guardado
 let editingProformaId = null;
@@ -1906,8 +1907,8 @@ let editingPublicationId = null;
 // ================================================================
 // SUPABASE CLIENT — persistence backend
 // ================================================================
-const APP_VERSION = "1.25.14";
-const APP_BUILD_DATE = "2026-05-03 10:30";
+const APP_VERSION = "1.25.15";
+const APP_BUILD_DATE = "2026-06-03";
 const SB_URL = 'https://yhxunhgektawsnhmuise.supabase.co'; // ← pega tu Project URL de Supabase
 const SB_KEY = 'sb_publishable_FwsSLxWnukLPl-pWzrAdqw_5Dy8Wp8-'; // ← pega tu anon public key de Supabase
 // session_id dinámico: cuando un usuario se autentica, su user.id reemplaza este valor
@@ -3166,7 +3167,12 @@ function removeProduct(id){
   if (!confirm("¿Eliminar este producto del banco? Se quitará también de cualquier catálogo donde esté.")) return;
   products=products.filter(p=>p.id!==id);
   catalogProductIds = catalogProductIds.filter(pid => pid !== id);
-  saveToStorage(); renderProducts(); updateCatFilter(); updateBankStats(); renderPrfList(); updateCatalogSelectedInfo();
+  if (!deletedProductIds.includes(id)) deletedProductIds.push(id); // v1.25.15: tombstone
+  const snap = saveToStorage();
+  // v1.25.15: subir el borrado YA (sin esperar el debounce de 1.5s). Si recargas
+  // antes de que sincronice, la nube "resucitaba" el producto eliminado.
+  try { clearTimeout(sbSyncTimer); if (snap && typeof sbSaveSession === 'function') sbSaveSession(snap); } catch(e){}
+  renderProducts(); updateCatFilter(); updateBankStats(); renderPrfList(); updateCatalogSelectedInfo();
 }
 function updateCatFilter(){
   const cats=["all",...new Set(products.map(p=>p.tag).filter(Boolean))];
@@ -3355,8 +3361,11 @@ function resetForm(){
 }
 function clearAll(){
   if(!confirm("¿Eliminar TODOS los productos del banco? Esto vacía también el catálogo."))return;
+  products.forEach(p=>{ if(!deletedProductIds.includes(p.id)) deletedProductIds.push(p.id); }); // v1.25.15: tombstones
   products=[]; catalogProductIds=[];
-  saveToStorage();renderProducts();updateCatFilter();updateBankStats();renderPrfList();updateCatalogSelectedInfo();
+  const snap = saveToStorage();
+  try { clearTimeout(sbSyncTimer); if (snap && typeof sbSaveSession === 'function') sbSaveSession(snap); } catch(e){}
+  renderProducts();updateCatFilter();updateBankStats();renderPrfList();updateCatalogSelectedInfo();
   showToast("Banco vaciado");
 }
 
@@ -4262,6 +4271,9 @@ function scheduleAutoSave(){
 }
 function saveToStorage(){
   try{
+    // v1.25.15: si un id "borrado" vuelve a existir (re-importado, re-creado),
+    // des-marcarlo para que el merge no lo filtre por error. Mantiene la lista limpia.
+    if (Array.isArray(deletedProductIds)) deletedProductIds = deletedProductIds.filter(tid => !products.some(p=>p.id===tid));
     const v = id => { const e = document.getElementById(id); return e ? e.value : ''; };
     // v1.25.3: capturar snapshot COMPLETO de la publicación actual (todos los textos, transforms, fotos)
     let pubState = null;
@@ -4270,6 +4282,7 @@ function saveToStorage(){
     const s={
       products,proformaItems,
       catalogProductIds,
+      deletedProductIds, // v1.25.15: tombstones de productos borrados
       catDate: v("catDate"),
       catValidity: v("catValidity"),
       catTitle: v("catTitle"),
@@ -4390,6 +4403,7 @@ function saveToStorage(){
     if (dot) dot.title="Guardado local: "+new Date().toLocaleTimeString();
     // Sincronizar a Supabase con debounce
     scheduleSbSync(s);
+    return s; // v1.25.15: devolver snapshot para permitir flush inmediato (borrados)
   }catch(e){
     // v1.25.13: NO mostrar alert popup molesto. Solo log + toast discreto.
     // Si falla el guardado del estado liviano (productos, textos, etc.) es grave
@@ -4551,6 +4565,22 @@ async function loadFromStorage(){
             sbData.products = localProds;
           }
         }
+        // v1.25.15: RESPETAR BORRADOS. El merge anterior es una UNIÓN (nube + locales
+        // únicos) y por diseño nunca podía representar una eliminación: cualquier
+        // producto presente en la nube pero ausente en local se "resucitaba".
+        // Combinamos los tombstones (local + nube) y filtramos esos ids del resultado.
+        try {
+          const tombstones = new Set([
+            ...(Array.isArray(deletedProductIds) ? deletedProductIds : []),
+            ...((s && Array.isArray(s.deletedProductIds)) ? s.deletedProductIds : []),
+            ...((sbData && Array.isArray(sbData.deletedProductIds)) ? sbData.deletedProductIds : []),
+          ]);
+          if (sbData && Array.isArray(sbData.products) && tombstones.size) {
+            sbData.products = sbData.products.filter(p => !tombstones.has(p.id));
+          }
+          deletedProductIds = [...tombstones];
+          if (sbData) sbData.deletedProductIds = [...tombstones]; // persistir el tombstone en la nube
+        } catch(e) { console.warn('tombstone merge fail:', e); }
         // v1.25.11: si sbData es null O no tiene products pero local SÍ los tiene,
         // NO entrar al applyLoadedState(sbData) — los productos locales ya están
         // aplicados desde la línea 4225 y NO debemos sobrescribir
@@ -4712,6 +4742,7 @@ function applyLoadedState(s){
     products = s.products || [];
     proformaItems = s.proformaItems || [];
     catalogProductIds = Array.isArray(s.catalogProductIds) ? s.catalogProductIds : [];
+    if (Array.isArray(s.deletedProductIds)) deletedProductIds = s.deletedProductIds; // v1.25.15: restaurar tombstones
     const bankIds = new Set(products.map(p=>p.id));
     catalogProductIds = catalogProductIds.filter(id => bankIds.has(id));
     const sv = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined) el.value = val; };
