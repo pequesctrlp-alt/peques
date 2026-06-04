@@ -615,6 +615,18 @@ details.adv-panel .adv-body{padding:0 12px 12px;border-top:1px solid rgba(224,17
         <label style="font-size:10.5px;color:#5b6b86;display:block;margin-bottom:3px;">Slogan</label>
         <input type="text" id="bizSlogan" placeholder="Tú lo piensas, nosotros lo creamos" style="width:100%;padding:8px 10px;border:1px solid #d5deeb;border-radius:6px;font-size:13px;outline:none;box-sizing:border-box;">
       </div>
+      <div style="margin-top:8px;border:1px dashed #d5deeb;border-radius:8px;padding:10px;">
+        <label style="font-size:10.5px;color:#5b6b86;display:block;margin-bottom:6px;">Logo del negocio <span style="color:#8b97ab;font-weight:normal;">(aparece en catálogos, proformas y publicaciones)</span></label>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <img id="bizLogoPreview" alt="Logo" style="width:64px;height:64px;object-fit:contain;border:1px solid #e3e9f1;border-radius:10px;background:#fff;">
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <label for="bizLogoFile" style="display:inline-block;cursor:pointer;background:#16233f;color:#fff;font-size:12px;padding:8px 12px;border-radius:6px;">📤 Subir logo</label>
+            <input type="file" id="bizLogoFile" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="onBizLogoUpload(this)">
+            <button type="button" id="bizLogoRemove" onclick="removeBizLogo()" style="background:#fff;border:1px solid #d5deeb;color:#a8245c;font-size:11.5px;padding:6px 10px;border-radius:6px;cursor:pointer;display:none;">🗑️ Quitar logo personalizado</button>
+            <span style="font-size:10px;color:#8b97ab;">PNG con fondo transparente se ve mejor. Máx. ~512px (se ajusta solo).</span>
+          </div>
+        </div>
+      </div>
       <div style="margin-top:8px;">
         <label style="font-size:10.5px;color:#5b6b86;display:block;margin-bottom:3px;">Texto de envíos <span style="color:#8b97ab;font-weight:normal;">(aparece en publicaciones)</span></label>
         <input type="text" id="bizShipping" placeholder="🚚 Envíos a todo el Ecuador" style="width:100%;padding:8px 10px;border:1px solid #d5deeb;border-radius:6px;font-size:13px;outline:none;box-sizing:border-box;">
@@ -1051,6 +1063,20 @@ details.adv-panel .adv-body{padding:0 12px 12px;border-top:1px solid rgba(224,17
       </div>
     </div>
     <div class="field"><label>Notas / Condiciones</label><textarea id="prfNotas" rows="2" placeholder="50% anticipado..." oninput="updatePrfPreview();scheduleAutoSave()"></textarea></div>
+    <div class="f2" style="margin-top:6px;">
+      <div class="field">
+        <label>Forma del logo (proforma)</label>
+        <select id="prfLogoShape" onchange="onPrfLogoChange()">
+          <option value="contain">Original — sin recorte</option>
+          <option value="circle">Círculo</option>
+          <option value="square">Cuadrado</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Tamaño del logo: <span id="prfLogoSizeVal">26</span> mm</label>
+        <input type="range" id="prfLogoSize" min="12" max="45" value="26" step="1" oninput="onPrfLogoChange()">
+      </div>
+    </div>
   </div>
 
   <div class="divider-blue" style="margin:0 20px;"></div>
@@ -1858,6 +1884,12 @@ const CATS_BY_BIZ = {
 };
 function getDefaultCats(){ return CATS_BY_BIZ[activeBiz] || CATS_BY_BIZ.ctrlp; }
 let customCats = []; // {label, icon} — categorías que el usuario añadió a mano (por negocio)
+let customLogo = null; // v1.25.21: logo subido por el usuario (base64) por negocio; null = usar el logo por defecto
+// Devuelve el logo a usar: el subido por el usuario si existe, si no el del negocio.
+function activeLogoSrc(){
+  if (typeof customLogo === 'string' && customLogo) return customLogo;
+  return (typeof bizCfg==='function' ? bizCfg().logo : LOGO_URL);
+}
 let CATS = [...CATS_BY_BIZ.ctrlp]; // array activo; rebuildCATS() lo reconstruye según el negocio
 
 function rebuildCATS(){
@@ -1933,12 +1965,32 @@ function applyBizCatalogPalette(){
   }catch(e){}
 }
 
+// v1.25.23: paleta de la PROFORMA por negocio. Roles:
+//  DARK=banda superior/encabezado, GOLD=acento/total/franja, CREAM=fondos claros,
+//  BLUE/BLUELT=caja del cliente, ROSE=etiquetas, TXT=texto cuerpo.
+const PROFORMA_PALETTE_BY_BIZ = {
+  ctrlp: {
+    DARK:[22,35,63], GOLD:[244,180,0], CREAM:[252,247,240],
+    BLUE:[35,75,120], BLUELT:[218,232,248], ROSE:[224,17,127],
+    TXT:[22,35,63], SAGE:[120,150,120], LGRAY:[242,238,234],
+  },
+  peques: {
+    DARK:[28,58,110], GOLD:[244,194,13], CREAM:[247,250,255],
+    BLUE:[28,58,110], BLUELT:[231,240,251], ROSE:[214,51,122],
+    TXT:[28,42,72], SAGE:[95,168,224], LGRAY:[238,243,250],
+  },
+};
+function getProformaPalette(){
+  return PROFORMA_PALETTE_BY_BIZ[activeBiz] || PROFORMA_PALETTE_BY_BIZ.ctrlp;
+}
+
 // ─── STATE ────────────────────────────────────────────────
 // products = banco maestro (catálogo de la marca)
 // catalogProductIds = IDs de productos del banco que están en el catálogo PDF actual
 // pickerSelection = selección temporal mientras está abierto el modal picker
 let products=[], proformaItems=[], nPerPage=3, activeFilter="all", selCat="";
 let catLogoSize=52, catLogoShape='contain'; // v1.25.20: tamaño (mm) y forma del logo en el PDF
+let prfLogoSize=26, prfLogoShape='contain'; // v1.25.22: tamaño (mm) y forma del logo en la proforma
 let currentPhoto=null, autoSaveTimer=null, savedCatalogs=[];
 let savedProformas = []; // proformas guardadas {id, name, data, savedAt}
 let savedPublications = []; // publicaciones guardadas {id, name, data, savedAt}
@@ -1954,7 +2006,7 @@ let editingPublicationId = null;
 // ================================================================
 // SUPABASE CLIENT — persistence backend
 // ================================================================
-const APP_VERSION = "1.25.20";
+const APP_VERSION = "1.25.24";
 const APP_BUILD_DATE = "2026-06-03";
 const SB_URL = 'https://yhxunhgektawsnhmuise.supabase.co'; // ← pega tu Project URL de Supabase
 const SB_KEY = 'sb_publishable_FwsSLxWnukLPl-pWzrAdqw_5Dy8Wp8-'; // ← pega tu anon public key de Supabase
@@ -2086,7 +2138,7 @@ async function switchBiz(b){ if(!BIZ[b]){ return; } if(b===activeBiz){ applyBizI
   try{ clearTimeout(sbSyncTimer); }catch(e){}
   try{ clearTimeout(autoSaveTimer); }catch(e){}
   suppressAutoSave = true;
-  products = []; proformaItems = []; catalogProductIds = []; customCats = [];
+  products = []; proformaItems = []; catalogProductIds = []; customCats = []; customLogo = null;
   applyBizTheme(); applyBizIdentity();
   try{ applyBizCatalogPalette(); }catch(e){}
   try{ logoImgCache=null; logoPngTransparentCache=null; if(typeof preloadLogo==='function') preloadLogo(); }catch(e){}
@@ -3081,6 +3133,13 @@ function onCatLogoChange(){
   const shp=document.getElementById("catLogoShape");
   if(sz){ catLogoSize=parseInt(sz.value)||52; const v=document.getElementById("catLogoSizeVal"); if(v) v.textContent=catLogoSize; }
   if(shp){ catLogoShape=shp.value||'contain'; }
+  scheduleAutoSave();
+}
+function onPrfLogoChange(){
+  const sz=document.getElementById("prfLogoSize");
+  const shp=document.getElementById("prfLogoShape");
+  if(sz){ prfLogoSize=parseInt(sz.value)||26; const v=document.getElementById("prfLogoSizeVal"); if(v) v.textContent=prfLogoSize; }
+  if(shp){ prfLogoShape=shp.value||'contain'; }
   scheduleAutoSave();
 }
 function applyPreset(name){
@@ -4376,7 +4435,9 @@ function saveToStorage(){
       cardShowDesc: document.getElementById('showCardDesc')?.checked || false,
       cardShowBorder: document.getElementById('showCardBorder')?.checked || false,
       customCats, // categorías personalizadas del banco de productos
+      customLogo, // v1.25.21: logo propio subido por el usuario (base64) por negocio
       catLogoSize, catLogoShape, // v1.25.20: tamaño y forma del logo en el PDF
+      prfLogoSize, prfLogoShape, // v1.25.22: tamaño y forma del logo en la proforma
       pubFonts: pubFonts,                   // mapa por tipo de texto → fuente (v1.22+)
       pubFontTitle: pubFontTitle,           // (legacy v1.21) fuente para títulos
       pubFontBody: pubFontBody,             // (legacy v1.21) fuente para cuerpos
@@ -4831,6 +4892,15 @@ function applyLoadedState(s, deferProducts){
       catLogoShape = s.catLogoShape;
       const e = document.getElementById('catLogoShape'); if (e) e.value = catLogoShape;
     }
+    if (typeof s.prfLogoSize === 'number') {
+      prfLogoSize = s.prfLogoSize;
+      const e = document.getElementById('prfLogoSize'); if (e) e.value = prfLogoSize;
+      const v = document.getElementById('prfLogoSizeVal'); if (v) v.textContent = prfLogoSize;
+    }
+    if (typeof s.prfLogoShape === 'string') {
+      prfLogoShape = s.prfLogoShape;
+      const e = document.getElementById('prfLogoShape'); if (e) e.value = prfLogoShape;
+    }
     if (s.cardStyle) {
       cardStyle = s.cardStyle;
       const btn = document.querySelector(`[data-style="${s.cardStyle}"]`);
@@ -4856,6 +4926,14 @@ function applyLoadedState(s, deferProducts){
       rebuildCATS();
       try { renderCatChips(); } catch(e){}
     }
+    // v1.25.21: logo propio subido por el usuario (por negocio)
+    if (typeof s.customLogo === 'string' && s.customLogo) {
+      customLogo = s.customLogo;
+    } else {
+      customLogo = null;
+    }
+    try { logoImgCache = null; logoPngTransparentCache = null; if (typeof preloadLogo==='function') preloadLogo(); } catch(e){}
+    try { refreshBizLogoUI(); } catch(e){}
     // Personalización de publicaciones (fuentes y fondo)
     if (s.pubFonts && typeof s.pubFonts === 'object') {
       // v1.22+: mapa por tipo
@@ -5634,6 +5712,7 @@ function openBizDataModal() {
   });
   const ov = document.getElementById('bizDataModal');
   if (ov) ov.style.display = 'flex';
+  try { refreshBizLogoUI(); } catch(e){}
 }
 
 function closeBizDataModal() {
@@ -5666,6 +5745,78 @@ function getShippingText() {
   const el = document.getElementById('shopShipping');
   const val = el ? (el.value || '').trim() : '';
   return val || '🚚 Envíos a todo el Ecuador';
+}
+
+// ── v1.25.21: LOGO PROPIO POR NEGOCIO ──────────────────────────
+// Refresca la vista previa y el botón "quitar" en el modal según customLogo.
+function refreshBizLogoUI() {
+  const prev = document.getElementById('bizLogoPreview');
+  const rm   = document.getElementById('bizLogoRemove');
+  if (prev) prev.src = activeLogoSrc();
+  if (rm)   rm.style.display = (typeof customLogo==='string' && customLogo) ? 'inline-block' : 'none';
+}
+
+// Lee el archivo, lo redimensiona a máx. 512px (conservando proporción y
+// transparencia si es PNG) y lo guarda como logo del negocio activo.
+function onBizLogoUpload(input) {
+  const file = input && input.files && input.files[0];
+  if (!file) return;
+  if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+    try { showToast('Formato no válido. Usa PNG, JPG o WEBP.'); } catch(e){}
+    input.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 512;
+      let w = img.naturalWidth || img.width;
+      let h = img.naturalHeight || img.height;
+      if (w > MAX || h > MAX) {
+        const r = Math.min(MAX / w, MAX / h);
+        w = Math.round(w * r);
+        h = Math.round(h * r);
+      }
+      const cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      const cx = cv.getContext('2d');
+      cx.clearRect(0, 0, w, h); // mantiene transparencia para PNG/WEBP
+      cx.drawImage(img, 0, 0, w, h);
+      // PNG conserva transparencia; si era JPG el fondo queda como venía.
+      try {
+        customLogo = cv.toDataURL('image/png');
+      } catch(e) {
+        customLogo = ev.target.result; // fallback: guardar tal cual
+      }
+      // Invalidar caches y recargar el logo en memoria
+      try { logoImgCache = null; logoPngTransparentCache = null; } catch(e){}
+      try { if (typeof preloadLogo==='function') preloadLogo(); } catch(e){}
+      refreshBizLogoUI();
+      // Refrescar todo lo que muestra el logo
+      try { renderPost(); } catch(e){}
+      try { updatePrfPreview(); } catch(e){}
+      try { scheduleAutoSave(); } catch(e){}
+      try { showToast('Logo actualizado para ' + (typeof bizCfg==='function'?bizCfg().name:'')); } catch(e){}
+      input.value = '';
+    };
+    img.onerror = () => { try { showToast('No se pudo leer la imagen.'); } catch(e){} input.value=''; };
+    img.src = ev.target.result;
+  };
+  reader.onerror = () => { try { showToast('No se pudo leer el archivo.'); } catch(e){} };
+  reader.readAsDataURL(file);
+}
+
+// Quita el logo personalizado y vuelve al logo por defecto del negocio.
+function removeBizLogo() {
+  customLogo = null;
+  try { logoImgCache = null; logoPngTransparentCache = null; } catch(e){}
+  try { if (typeof preloadLogo==='function') preloadLogo(); } catch(e){}
+  refreshBizLogoUI();
+  try { renderPost(); } catch(e){}
+  try { updatePrfPreview(); } catch(e){}
+  try { scheduleAutoSave(); } catch(e){}
+  try { showToast('Se restauró el logo por defecto'); } catch(e){}
 }
 
 // Cerrar modal con Escape o click fuera
@@ -5882,7 +6033,7 @@ function setPhotoFit(fit, btn) {
 // ── COLLAGE: cargar fotos (2-10) ──
 // v1.25.13: comprime una imagen base64 si es muy pesada.
 // Reduce a max 1500px lado mayor + JPEG calidad 85%. Solo redimensiona si pesa > umbral.
-async function compressImageIfNeeded(dataUrl, maxBytes = 600000, maxDim = 1500) {
+async function compressImageIfNeeded(dataUrl, maxBytes = 850000, maxDim = 1800) {
   if (!dataUrl || dataUrl.length < maxBytes) return dataUrl;
   return new Promise((resolve) => {
     const img = new Image();
@@ -5900,11 +6051,11 @@ async function compressImageIfNeeded(dataUrl, maxBytes = 600000, maxDim = 1500) 
       ctx.fillRect(0, 0, cv.width, cv.height);
       ctx.drawImage(img, 0, 0, cv.width, cv.height);
       // JPEG con calidad ajustada
-      let q = 0.85;
+      let q = 0.92;
       let result = cv.toDataURL('image/jpeg', q);
       // Si todavía es muy pesado, bajar calidad iterativamente
-      while (result.length > maxBytes && q > 0.4) {
-        q -= 0.1;
+      while (result.length > maxBytes && q > 0.5) {
+        q -= 0.08;
         result = cv.toDataURL('image/jpeg', q);
       }
       console.log(`Imagen comprimida: ${Math.round(dataUrl.length/1024)}KB → ${Math.round(result.length/1024)}KB (q=${q.toFixed(2)})`);
@@ -8529,7 +8680,7 @@ function preloadLogo() {
     const im = new Image();
     im.onload = () => { logoImgCache = im; resolve(im); };
     im.onerror = () => resolve(null);
-    im.src = (typeof bizCfg==='function'?bizCfg().logo:LOGO_URL);
+    im.src = activeLogoSrc();
   });
 }
 
@@ -8555,7 +8706,7 @@ function drawLogoCircle(ctx, x, y, size) {
     logoImgCache = img;
     try { renderPost(); } catch(e) {}
   };
-  img.src = (typeof bizCfg==='function'?bizCfg().logo:LOGO_URL);
+  img.src = activeLogoSrc();
 }
 
 // v1.22.2: PNG transparente del logo redondeado para usar en PDFs.
@@ -11143,6 +11294,113 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function showToast(msg){const t=document.getElementById("toast");t.textContent=msg;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),2600);}
 
+// ── v1.25.24: CARÁTULA DEL CATÁLOGO POR NEGOCIO ─────────────────
+// Diseño de portada distinto y fijo por negocio (no depende de los
+// colores guardados → el diseño nuevo sale SIEMPRE al exportar).
+function _hex2rgb(h){
+  if (Array.isArray(h)) return h.slice(0,3);
+  const m = String(h).replace('#','');
+  const n = (m.length===3) ? m.split('').map(c=>c+c).join('') : m;
+  const i = parseInt(n,16);
+  return [(i>>16)&255,(i>>8)&255,i&255];
+}
+// Mezcla un color hacia el blanco (amt 0..1) → tono pastel (sin necesitar opacidad)
+function _tint(rgb, amt){
+  const c = _hex2rgb(rgb);
+  return c.map(v => Math.round(v + (255 - v) * amt));
+}
+const COVER_THEME_BY_BIZ = {
+  // CTRL+P → corporativo: navy, marco dorado, esquinas geométricas
+  ctrlp:  { style:'corporate', bg:'#16233f', panel:'#1d2f4f', accent:'#f4b400', accent2:'#e0117f', txt:'#eef3fb', muted:'#a9bbd6' },
+  // PEQUES → suave/bebé: panel blanco redondeado, puntos pastel, pill de contacto
+  peques: { style:'soft', bg:'#eaf3fc', panel:'#ffffff', accent:'#d6337a', accent2:'#5fa8e0', txt:'#1c3a6e', muted:'#6e88ad', band:'#1c3a6e' },
+};
+
+function drawCatalogCover(doc, W, H, d){
+  const t = COVER_THEME_BY_BIZ[activeBiz] || COVER_THEME_BY_BIZ.ctrlp;
+  const bg=_hex2rgb(t.bg), panel=_hex2rgb(t.panel), accent=_hex2rgb(t.accent),
+        accent2=_hex2rgb(t.accent2), txt=_hex2rgb(t.txt), muted=_hex2rgb(t.muted);
+  const logoTop = H*0.165, logoCenterY = logoTop + (catLogoSize/2);
+
+  if (t.style === 'corporate') {
+    // Fondo + panel interior + doble marco dorado
+    doc.setFillColor(...bg); doc.rect(0,0,W,H,'F');
+    doc.setFillColor(...panel); doc.rect(W*0.05,H*0.05,W*0.90,H*0.90,'F');
+    doc.setDrawColor(...accent);
+    doc.setLineWidth(0.9); doc.rect(W*0.065,H*0.065,W*0.87,H*0.87,'S');
+    doc.setLineWidth(0.3); doc.rect(W*0.082,H*0.082,W*0.836,H*0.836,'S');
+    // Esquinas geométricas (brackets)
+    const x0=W*0.065,y0=H*0.065,x1=W*0.935,y1=H*0.935,bl=Math.min(W,H)*0.05;
+    doc.setLineWidth(1.5);
+    doc.line(x0,y0,x0+bl,y0); doc.line(x0,y0,x0,y0+bl);
+    doc.line(x1,y0,x1-bl,y0); doc.line(x1,y0,x1,y0+bl);
+    doc.line(x0,y1,x0+bl,y1); doc.line(x0,y1,x0,y1-bl);
+    doc.line(x1,y1,x1-bl,y1); doc.line(x1,y1,x1,y1-bl);
+    // Eyebrow
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...accent);
+    doc.text('C A T Á L O G O', W/2, H*0.135, {align:'center'});
+    doc.setLineWidth(0.3);
+    doc.line(W*0.30,H*0.131,W*0.37,H*0.131); doc.line(W*0.63,H*0.131,W*0.70,H*0.131);
+    // Logo
+    placePdfLogo(doc, W/2, logoTop, catLogoSize, {shape:catLogoShape, align:'center'});
+    // Nombre del negocio
+    doc.setFont('helvetica','bold'); doc.setFontSize(W>250?28:24); doc.setTextColor(...txt);
+    doc.text((d.name||'').toUpperCase(), W/2, H*0.46, {align:'center', maxWidth:W*0.8});
+    doc.setDrawColor(...accent); doc.setLineWidth(0.7); doc.line(W*0.34,H*0.487,W*0.66,H*0.487);
+    if (d.slogan){ doc.setFont('helvetica','italic'); doc.setFontSize(10); doc.setTextColor(...accent); doc.text(d.slogan,W/2,H*0.527,{align:'center',maxWidth:W*0.72}); }
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...txt);
+    doc.text((d.catTitle||'').toUpperCase(),W/2,H*0.60,{align:'center',maxWidth:W*0.74});
+    let yy=H*0.645;
+    if (d.pubVal){ doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...accent2); doc.text(d.pubVal,W/2,yy,{align:'center'}); yy+=H*0.034; }
+    if (d.catMsg){ doc.setFont('helvetica','italic'); doc.setFontSize(8.5); doc.setTextColor(...muted); doc.text(d.catMsg,W/2,yy,{align:'center',maxWidth:W*0.66}); yy+=H*0.034; }
+    if (d.catDate){ const dt=new Date(d.catDate+'T12:00:00'); doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...txt); doc.text(dt.toLocaleDateString('es-ES',{day:'2-digit',month:'long',year:'numeric'}),W/2,yy,{align:'center'}); yy+=H*0.030; }
+    if (d.catVal){ doc.setFontSize(7.5); doc.setTextColor(...accent); doc.text('Válido: '+d.catVal,W/2,yy,{align:'center'}); }
+    // Contacto inferior
+    doc.setDrawColor(...accent); doc.setLineWidth(0.4); doc.line(W*0.22,H*0.875,W*0.78,H*0.875);
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(...txt);
+    if (d.shopWa) doc.text('WhatsApp: '+d.shopWa, W/2, H*0.905,{align:'center'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...muted);
+    if (d.shopAddr) doc.text(d.shopAddr, W/2, H*0.930,{align:'center'});
+    doc.setTextColor(...accent2);
+    if (d.shopIg) doc.text(d.shopIg+'  ·  Envíos a todo el país', W/2, H*0.955,{align:'center'});
+
+  } else {
+    // SOFT / PEQUES — sin opacidad (usa tonos pastel pre-mezclados)
+    doc.setFillColor(...bg); doc.rect(0,0,W,H,'F');
+    // Puntos decorativos pastel
+    const dots=[[W*0.12,H*0.10,t.accent2,9],[W*0.87,H*0.11,t.accent,7],[W*0.91,H*0.27,t.accent2,5],
+                [W*0.09,H*0.86,t.accent,8],[W*0.89,H*0.90,t.accent2,6],[W*0.15,H*0.27,t.accent,4]];
+    dots.forEach(([cx,cy,col,r])=>{ doc.setFillColor(..._tint(col,0.68)); doc.circle(cx,cy,r,'F'); });
+    // Panel con sombra suave
+    doc.setFillColor(224,231,242); doc.roundedRect(W*0.10+1.6,H*0.10+1.6,W*0.80,H*0.80,8,8,'F');
+    doc.setFillColor(...panel); doc.roundedRect(W*0.10,H*0.10,W*0.80,H*0.80,8,8,'F');
+    doc.setDrawColor(..._tint(t.accent2,0.2)); doc.setLineWidth(0.5); doc.roundedRect(W*0.10,H*0.10,W*0.80,H*0.80,8,8,'S');
+    // Halo pastel detrás del logo
+    doc.setFillColor(..._tint(t.accent,0.78)); doc.circle(W/2, logoCenterY, Math.max(catLogoSize*0.62, 16), 'F');
+    placePdfLogo(doc, W/2, logoTop, catLogoSize, {shape:catLogoShape, align:'center'});
+    // Nombre
+    doc.setFont('helvetica','bold'); doc.setFontSize(W>250?27:23); doc.setTextColor(...txt);
+    doc.text((d.name||''), W/2, H*0.46, {align:'center', maxWidth:W*0.7});
+    // Divisor de puntos
+    [[-6,accent],[0,accent2],[6,accent]].forEach(([off,col])=>{ doc.setFillColor(...col); doc.circle(W/2+off, H*0.487, 1.2,'F'); });
+    if (d.slogan){ doc.setFont('helvetica','italic'); doc.setFontSize(10); doc.setTextColor(...muted); doc.text(d.slogan,W/2,H*0.527,{align:'center',maxWidth:W*0.64}); }
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...accent); doc.text((d.catTitle||'').toUpperCase(),W/2,H*0.60,{align:'center',maxWidth:W*0.66});
+    let yy=H*0.645;
+    if (d.pubVal){ doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...accent2); doc.text(d.pubVal,W/2,yy,{align:'center'}); yy+=H*0.034; }
+    if (d.catMsg){ doc.setFont('helvetica','italic'); doc.setFontSize(8.5); doc.setTextColor(...muted); doc.text(d.catMsg,W/2,yy,{align:'center',maxWidth:W*0.58}); yy+=H*0.034; }
+    if (d.catDate){ const dt=new Date(d.catDate+'T12:00:00'); doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...txt); doc.text(dt.toLocaleDateString('es-ES',{day:'2-digit',month:'long',year:'numeric'}),W/2,yy,{align:'center'}); yy+=H*0.030; }
+    if (d.catVal){ doc.setFontSize(7.5); doc.setTextColor(...accent); doc.text('Válido: '+d.catVal,W/2,yy,{align:'center'}); }
+    // Pill de contacto
+    const pw=W*0.66, ph=Math.max(H*0.075,16), px=(W-pw)/2, py=H*0.795;
+    doc.setFillColor(..._hex2rgb(t.band)); doc.roundedRect(px,py,pw,ph,ph/2,ph/2,'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(255,255,255);
+    if (d.shopWa) doc.text('WhatsApp: '+d.shopWa, W/2, py+ph*0.42,{align:'center'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+    const line2=[d.shopIg,d.shopAddr].filter(Boolean).join('  ·  ');
+    if (line2) doc.text(line2, W/2, py+ph*0.78,{align:'center',maxWidth:pw*0.92});
+  }
+}
+
 // ================================================================
 // PDF CATALOGO — sin solapamiento
 // El texto SIEMPRE respeta CARD_BOTTOM. Se calcula primero cuanto
@@ -11175,29 +11433,19 @@ async function generateCatalogPDF(){
   const doc=new jsPDF({orientation:orient,unit:"mm",format:"a4"});
   const W=isLand?297:210,H=isLand?210:297;
 
-  // PORTADA
-  doc.setFillColor(...CC.hdrBg); doc.rect(0,0,W,H,"F");
-  doc.setFillColor(...CC.hdrBg.map(v=>Math.min(255,v+30))); doc.rect(0,H*0.13,W,H*0.74,"F");
-  placePdfLogo(doc, W/2, H*0.17, catLogoSize, {shape:catLogoShape, align:"center"});
-  doc.setDrawColor(...CC.accent); doc.setLineWidth(0.7); doc.line(W*0.18,H*0.41,W*0.82,H*0.41);
-  doc.setFont("helvetica","bold"); doc.setFontSize(22); doc.setTextColor(...CC.hdrTxt);
-  doc.text(bizCfg().name,W/2,H*0.47,{align:"center"});
-  doc.setFont("helvetica","italic"); doc.setFontSize(9.5); doc.setTextColor(...CC.accent);
-  doc.text(shopSlogan||bizCfg().slogan,W/2,H*0.52,{align:"center"});
-  doc.setDrawColor(...CC.accent); doc.setLineWidth(0.4); doc.line(W*0.28,H*0.547,W*0.72,H*0.547);
-  doc.setFont("helvetica","bold"); doc.setFontSize(14); doc.setTextColor(...CC.hdrTxt);
-  doc.text(catTitle.toUpperCase(),W/2,H*0.595,{align:"center",maxWidth:W*0.74});
-  if(pubVal){doc.setFont("helvetica","normal");doc.setFontSize(9.5);doc.setTextColor(...CC.accent);doc.text(pubVal,W/2,H*0.638,{align:"center"});}
-  if(catMsg){doc.setFont("helvetica","italic");doc.setFontSize(8.5);doc.setTextColor(...CC.accent);doc.text(catMsg,W/2,H*0.678,{align:"center",maxWidth:W*0.66});}
-  if(catDate){const d=new Date(catDate+"T12:00:00");doc.setFont("helvetica","normal");doc.setFontSize(8);doc.setTextColor(...CC.hdrTxt);doc.text(d.toLocaleDateString("es-ES",{day:"2-digit",month:"long",year:"numeric"}),W/2,H*0.728,{align:"center"});}
-  if(catVal){doc.setFontSize(7.5);doc.setTextColor(...CC.accent);doc.text("Valido: "+catVal,W/2,H*0.762,{align:"center"});}
-  doc.setFillColor(...CC.hdrBg); doc.rect(0,H*0.862,W,H*0.138,"F");
-  doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(...CC.hdrTxt);
-  if(shopWa) doc.text("WA: "+shopWa,W/2,H*0.899,{align:"center"});
-  doc.setFont("helvetica","normal"); doc.setFontSize(8);
-  if(shopAddr) doc.text(shopAddr,W/2,H*0.929,{align:"center"});
-  doc.setTextColor(...CC.accent);
-  if(shopIg) doc.text(shopIg+" - Envios a todo el pais",W/2,H*0.960,{align:"center"});
+  // PORTADA — diseño por negocio (v1.25.24), independiente de los colores guardados
+  drawCatalogCover(doc, W, H, {
+    name: bizCfg().name,
+    slogan: shopSlogan || bizCfg().slogan,
+    catTitle: catTitle,
+    pubVal: pubVal,
+    catMsg: catMsg,
+    catDate: catDate,
+    catVal: catVal,
+    shopWa: shopWa,
+    shopIg: shopIg,
+    shopAddr: shopAddr,
+  });
 
   // PAGINAS PRODUCTOS
   const PER=nPerPage;
@@ -11833,6 +12081,7 @@ async function generateProformaPDF(){
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
   const W=210,H=297;
+  try{ await preloadLogo(); }catch(e){} // v1.25.21: asegurar el logo activo (subido o por defecto)
   const curr=document.getElementById("prfCurrency").value;
   const num=document.getElementById("prfNumero").value||"PRF-001";
   const fecha=document.getElementById("prfFecha").value;
@@ -11852,14 +12101,16 @@ async function generateProformaPDF(){
   const cEmail=document.getElementById("cliEmail").value;
 
   // Colores fijos profesionales para proforma
-  const DARK=[38,25,10], CREAM=[252,247,240], GOLD=[184,147,90];
-  const BLUE=[35,75,120], BLUELT=[218,232,248], TXT=[38,25,10];
-  const ROSE=[180,100,85], SAGE=[120,150,120], LGRAY=[242,238,234];
+  // Colores por negocio (v1.25.23)
+  const _PP=getProformaPalette();
+  const DARK=_PP.DARK, CREAM=_PP.CREAM, GOLD=_PP.GOLD;
+  const BLUE=_PP.BLUE, BLUELT=_PP.BLUELT, TXT=_PP.TXT;
+  const ROSE=_PP.ROSE, SAGE=_PP.SAGE, LGRAY=_PP.LGRAY;
 
   // BANDA SUPERIOR
   doc.setFillColor(...DARK); doc.rect(0,0,W,36,"F");
   doc.setFillColor(...GOLD); doc.rect(W-65,0,65,36,"F");
-  placePdfLogo(doc, 11, 5, 26, {shape:catLogoShape, align:"left"});
+  placePdfLogo(doc, 11, 5, prfLogoSize, {shape:prfLogoShape, align:"left"});
   doc.setFont("helvetica","bold"); doc.setFontSize(14); doc.setTextColor(252,247,240);
   doc.text(pN.toUpperCase().substring(0,28),41,14);
   doc.setFont("helvetica","italic"); doc.setFontSize(7); doc.setTextColor(...GOLD);
