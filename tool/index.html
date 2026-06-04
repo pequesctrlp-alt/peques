@@ -1668,6 +1668,17 @@ details.adv-panel .adv-body{padding:0 12px 12px;border-top:1px solid rgba(224,17
       <label style="display:flex;align-items:center;gap:7px;font-size:11.5px;cursor:pointer;"><input type="checkbox" id="chkWholesale" checked style="width:auto;"> Incluir precio por mayor</label>
       <label style="display:flex;align-items:center;gap:7px;font-size:11.5px;cursor:pointer;"><input type="checkbox" id="chkSku" style="width:auto;"> Incluir SKU</label>
     </div>
+    <div style="font-size:9.5px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--rose);margin:12px 0 7px;">Logo en la portada</div>
+    <div class="field"><label>Forma del logo</label>
+      <select id="catLogoShape" onchange="onCatLogoChange()">
+        <option value="contain">Original — sin recorte (respeta proporción)</option>
+        <option value="circle">Círculo</option>
+        <option value="square">Cuadrado — sin recorte</option>
+      </select>
+    </div>
+    <div class="field"><label>Tamaño del logo: <span id="catLogoSizeVal">52</span> mm</label>
+      <input type="range" id="catLogoSize" min="20" max="80" value="52" step="1" oninput="onCatLogoChange()" style="width:100%;">
+    </div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closePdfModal()">Cancelar</button>
       <button class="btn btn-gold" onclick="generateCatalogPDF()">Descargar PDF</button>
@@ -1906,11 +1917,28 @@ const PRESETS = {
   oro:{hdrBg:"#16233f",hdrTxt:"#fef9ec",accent:"#cf9700",pageBg:"#fef9ec",cardBg:"#ffffff",cardName:"#16233f",price:"#6b4a00",tblHdr:"#16233f",footer:"#16233f"},
 };
 
+// v1.25.19: paleta de catálogo por negocio (según el giro). Se aplica al cambiar de
+// negocio SOLO como base; si el negocio tiene colores guardados propios, esos mandan.
+const CATALOG_PALETTE_BY_BIZ = {
+  // CTRL+P — corporativo: navy + dorado
+  ctrlp:  {hdrBg:"#16233f",hdrTxt:"#e4ecf7",accent:"#f4b400",pageBg:"#f7f9fc",cardBg:"#ffffff",cardName:"#16233f",price:"#b50d66",tblHdr:"#16233f",footer:"#16233f"},
+  // PEQUES — bebé: azul suave + rosa, fondo rosado claro
+  peques: {hdrBg:"#1c3a6e",hdrTxt:"#ffffff",accent:"#d6337a",pageBg:"#fdf4f9",cardBg:"#ffffff",cardName:"#1c3a6e",price:"#a8245c",tblHdr:"#1c3a6e",footer:"#1c3a6e"},
+};
+function applyBizCatalogPalette(){
+  try{
+    const p = CATALOG_PALETTE_BY_BIZ[activeBiz] || CATALOG_PALETTE_BY_BIZ.ctrlp;
+    Object.entries(p).forEach(([k,v])=>{ const el=document.getElementById("cc_"+k); if(el) el.value=v; });
+    try{ onCatColorChange(); }catch(e){}
+  }catch(e){}
+}
+
 // ─── STATE ────────────────────────────────────────────────
 // products = banco maestro (catálogo de la marca)
 // catalogProductIds = IDs de productos del banco que están en el catálogo PDF actual
 // pickerSelection = selección temporal mientras está abierto el modal picker
 let products=[], proformaItems=[], nPerPage=3, activeFilter="all", selCat="";
+let catLogoSize=52, catLogoShape='contain'; // v1.25.20: tamaño (mm) y forma del logo en el PDF
 let currentPhoto=null, autoSaveTimer=null, savedCatalogs=[];
 let savedProformas = []; // proformas guardadas {id, name, data, savedAt}
 let savedPublications = []; // publicaciones guardadas {id, name, data, savedAt}
@@ -1926,7 +1954,7 @@ let editingPublicationId = null;
 // ================================================================
 // SUPABASE CLIENT — persistence backend
 // ================================================================
-const APP_VERSION = "1.25.18";
+const APP_VERSION = "1.25.20";
 const APP_BUILD_DATE = "2026-06-03";
 const SB_URL = 'https://yhxunhgektawsnhmuise.supabase.co'; // ← pega tu Project URL de Supabase
 const SB_KEY = 'sb_publishable_FwsSLxWnukLPl-pWzrAdqw_5Dy8Wp8-'; // ← pega tu anon public key de Supabase
@@ -2060,6 +2088,7 @@ async function switchBiz(b){ if(!BIZ[b]){ return; } if(b===activeBiz){ applyBizI
   suppressAutoSave = true;
   products = []; proformaItems = []; catalogProductIds = []; customCats = [];
   applyBizTheme(); applyBizIdentity();
+  try{ applyBizCatalogPalette(); }catch(e){}
   try{ logoImgCache=null; logoPngTransparentCache=null; if(typeof preloadLogo==='function') preloadLogo(); }catch(e){}
   try{ await loadFromStorage(); }catch(e){ console.warn('switchBiz load',e); }
   suppressAutoSave = false;
@@ -3046,6 +3075,14 @@ function onCatColorChange(){
   bar.style.color=txt;
   scheduleAutoSave();
 }
+// v1.25.20: tamaño y forma del logo en el PDF
+function onCatLogoChange(){
+  const sz=document.getElementById("catLogoSize");
+  const shp=document.getElementById("catLogoShape");
+  if(sz){ catLogoSize=parseInt(sz.value)||52; const v=document.getElementById("catLogoSizeVal"); if(v) v.textContent=catLogoSize; }
+  if(shp){ catLogoShape=shp.value||'contain'; }
+  scheduleAutoSave();
+}
 function applyPreset(name){
   const p=PRESETS[name]; if(!p) return;
   Object.entries(p).forEach(([k,v])=>{
@@ -3082,7 +3119,7 @@ function updateOcasion(){
   updatePreviewTitle(); scheduleAutoSave();
 }
 function updatePreviewTitle(){
-  document.getElementById("previewTitle").textContent=document.getElementById("catTitle").value||"CTRL+P";
+  document.getElementById("previewTitle").textContent=document.getElementById("catTitle").value||"Catálogo";
   document.getElementById("previewSub").textContent=document.getElementById("catPublico").value||"";
 }
 function handlePhoto(inp){
@@ -4260,7 +4297,7 @@ function recalcTotales(){
   ["totIvaRow","ptotIvaRow"].forEach(id=>document.getElementById(id).style.display=iv>0?"":"none");
 }
 function updatePrfPreview(){
-  const pn=document.getElementById("provNombre").value||"CTRL+P";
+  const pn=document.getElementById("provNombre").value||bizCfg().name;
   const cn=document.getElementById("cliNombre").value||"-";
   const curr=document.getElementById("prfCurrency").value;
   document.getElementById("prevNum").textContent="N: "+(document.getElementById("prfNumero").value||"PRF-001");
@@ -4339,6 +4376,7 @@ function saveToStorage(){
       cardShowDesc: document.getElementById('showCardDesc')?.checked || false,
       cardShowBorder: document.getElementById('showCardBorder')?.checked || false,
       customCats, // categorías personalizadas del banco de productos
+      catLogoSize, catLogoShape, // v1.25.20: tamaño y forma del logo en el PDF
       pubFonts: pubFonts,                   // mapa por tipo de texto → fuente (v1.22+)
       pubFontTitle: pubFontTitle,           // (legacy v1.21) fuente para títulos
       pubFontBody: pubFontBody,             // (legacy v1.21) fuente para cuerpos
@@ -4782,6 +4820,17 @@ function applyLoadedState(s, deferProducts){
      "prfNumero","prfNotas","prfCurrency","prfIva","prfDescuento"
     ].forEach(id => sv(id, s[id]));
     if (s.colors) loadCatColorState(s.colors);
+    else { try{ applyBizCatalogPalette(); }catch(e){} } // v1.25.19: sin colores guardados → paleta del negocio
+    // v1.25.20: tamaño y forma del logo en el PDF
+    if (typeof s.catLogoSize === 'number') {
+      catLogoSize = s.catLogoSize;
+      const e = document.getElementById('catLogoSize'); if (e) e.value = catLogoSize;
+      const v = document.getElementById('catLogoSizeVal'); if (v) v.textContent = catLogoSize;
+    }
+    if (typeof s.catLogoShape === 'string') {
+      catLogoShape = s.catLogoShape;
+      const e = document.getElementById('catLogoShape'); if (e) e.value = catLogoShape;
+    }
     if (s.cardStyle) {
       cardStyle = s.cardStyle;
       const btn = document.querySelector(`[data-style="${s.cardStyle}"]`);
@@ -8536,6 +8585,67 @@ function getTransparentLogoPng() {
   return logoPngTransparentCache;
 }
 
+// v1.25.20: generación del logo para PDF respetando la PROPORCIÓN real (no se deforma)
+// y con la FORMA elegida por el usuario:
+//   'contain' → lienzo con la proporción del logo, SIN recorte (no se pierde nada). [default]
+//   'square'  → logo contenido dentro de un cuadrado, sin recorte, márgenes transparentes.
+//   'circle'  → recorte circular que llena el círculo (ideal para logos redondos).
+function getLogoPngForPdf(shape){
+  if (!logoImgCache || !logoImgCache.complete || !logoImgCache.naturalWidth) return null;
+  const iw = logoImgCache.naturalWidth, ih = logoImgCache.naturalHeight;
+  const ratio = iw / ih;
+  const S = 512;
+  const off = document.createElement('canvas');
+  if (shape === 'contain') {
+    let cw = S, ch = S;
+    if (ratio >= 1) { cw = S; ch = Math.max(1, Math.round(S / ratio)); }
+    else { ch = S; cw = Math.max(1, Math.round(S * ratio)); }
+    off.width = cw; off.height = ch;
+    const ctx = off.getContext('2d');
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(logoImgCache, 0, 0, cw, ch);
+    return { url: off.toDataURL('image/png'), ratio };
+  }
+  off.width = S; off.height = S;
+  const ctx = off.getContext('2d');
+  ctx.clearRect(0, 0, S, S);
+  if (shape === 'circle') {
+    ctx.save();
+    ctx.beginPath(); ctx.arc(S/2, S/2, S/2, 0, Math.PI*2); ctx.clip();
+    // cover: llenar el círculo respetando proporción (sin deformar)
+    let dw = S, dh = S, dx = 0, dy = 0;
+    if (ratio >= 1) { dh = S; dw = S * ratio; dx = (S - dw) / 2; }
+    else { dw = S; dh = S / ratio; dy = (S - dh) / 2; }
+    ctx.drawImage(logoImgCache, dx, dy, dw, dh);
+    ctx.restore();
+  } else { // 'square' → contener sin recorte
+    let dw = S, dh = S, dx = 0, dy = 0;
+    if (ratio >= 1) { dw = S; dh = S / ratio; dy = (S - dh) / 2; }
+    else { dh = S; dw = S * ratio; dx = (S - dw) / 2; }
+    ctx.drawImage(logoImgCache, dx, dy, dw, dh);
+  }
+  return { url: off.toDataURL('image/png'), ratio: 1 };
+}
+
+// Coloca el logo en el PDF dentro de una caja [x,y,box,box], preservando proporción
+// para la forma 'contain'. align:'center' → x es el centro; align:'left' → x es la izquierda.
+function placePdfLogo(doc, x, y, box, opts){
+  opts = opts || {};
+  const shape = opts.shape || 'contain';
+  let url, ratio = 1, isContain = false;
+  const d = getLogoPngForPdf(shape);
+  if (d && d.url) { url = d.url; ratio = d.ratio || 1; isContain = (shape === 'contain'); }
+  else { url = "data:image/jpeg;base64," + LOGO_B64; ratio = 1; isContain = false; }
+  let dw = box, dh = box;
+  if (isContain && ratio) {
+    if (ratio >= 1) { dw = box; dh = box / ratio; }
+    else { dh = box; dw = box * ratio; }
+  }
+  const dx = (opts.align === 'left') ? x : (x - dw / 2);
+  const dy = y + (box - dh) / 2;
+  try { doc.addImage(url, (url.indexOf('image/png') >= 0 ? "PNG" : "JPEG"), dx, dy, dw, dh); } catch(e){}
+}
+
 // ── CONTAINED IMAGE DRAW ──────────────────────────────────────
 function drawContainedImage(ctx, src, x, y, w, h, bgColor) {
   const img = new Image();
@@ -11044,13 +11154,14 @@ async function generateCatalogPDF(){
     showToast(catalogProductIds.length ? "No hay productos válidos en el catálogo" : "Selecciona productos para el catálogo");
     return;
   }
+  try{ await preloadLogo(); }catch(e){} // v1.25.20: asegurar el logo del negocio activo (no el de respaldo)
   const {jsPDF}=window.jspdf;
   const orient=document.getElementById("pdfOrient").value;
   const showPrices=document.getElementById("chkPrices").checked;
   const showWholesale=document.getElementById("chkWholesale").checked;
   const showSku=document.getElementById("chkSku").checked;
   const curr=document.getElementById("catCurrency").value;
-  const catTitle=document.getElementById("catTitle").value||"CTRL+P";
+  const catTitle=document.getElementById("catTitle").value||"Catálogo";
   const catDate=document.getElementById("catDate").value;
   const catMsg=document.getElementById("catMessage").value;
   const catVal=document.getElementById("catValidity").value;
@@ -11067,12 +11178,12 @@ async function generateCatalogPDF(){
   // PORTADA
   doc.setFillColor(...CC.hdrBg); doc.rect(0,0,W,H,"F");
   doc.setFillColor(...CC.hdrBg.map(v=>Math.min(255,v+30))); doc.rect(0,H*0.13,W,H*0.74,"F");
-  try{const lpng=getTransparentLogoPng();if(lpng){doc.addImage(lpng,"PNG",W/2-26,H*0.17,52,52);}else{doc.addImage("data:image/jpeg;base64,"+LOGO_B64,"JPEG",W/2-26,H*0.17,52,52);}}catch(e){}
+  placePdfLogo(doc, W/2, H*0.17, catLogoSize, {shape:catLogoShape, align:"center"});
   doc.setDrawColor(...CC.accent); doc.setLineWidth(0.7); doc.line(W*0.18,H*0.41,W*0.82,H*0.41);
   doc.setFont("helvetica","bold"); doc.setFontSize(22); doc.setTextColor(...CC.hdrTxt);
-  doc.text("CTRL+P",W/2,H*0.47,{align:"center"});
+  doc.text(bizCfg().name,W/2,H*0.47,{align:"center"});
   doc.setFont("helvetica","italic"); doc.setFontSize(9.5); doc.setTextColor(...CC.accent);
-  doc.text(shopSlogan||"Tú lo piensas, nosotros lo creamos",W/2,H*0.52,{align:"center"});
+  doc.text(shopSlogan||bizCfg().slogan,W/2,H*0.52,{align:"center"});
   doc.setDrawColor(...CC.accent); doc.setLineWidth(0.4); doc.line(W*0.28,H*0.547,W*0.72,H*0.547);
   doc.setFont("helvetica","bold"); doc.setFontSize(14); doc.setTextColor(...CC.hdrTxt);
   doc.text(catTitle.toUpperCase(),W/2,H*0.595,{align:"center",maxWidth:W*0.74});
@@ -11101,7 +11212,7 @@ async function generateCatalogPDF(){
     const HDR=15,FTR=9;
     // Header
     doc.setFillColor(...CC.hdrBg); doc.rect(0,0,W,HDR,"F");
-    try{const lpng=getTransparentLogoPng();if(lpng){doc.addImage(lpng,"PNG",9,1.5,11,11);}else{doc.addImage("data:image/jpeg;base64,"+LOGO_B64,"JPEG",9,1.5,11,11);}}catch(e){}
+    placePdfLogo(doc, 9, 1.5, 11, {shape:catLogoShape, align:"left"});
     doc.setFont("helvetica","bold"); doc.setFontSize(6.5); doc.setTextColor(...CC.hdrTxt);
     doc.text(catTitle.toUpperCase(),23,7.5);
     if(pubVal){doc.setFont("helvetica","normal");doc.setFontSize(5.5);doc.setTextColor(...CC.accent);doc.text(pubVal,23,12.5);}
@@ -11138,12 +11249,12 @@ async function generateCatalogPDF(){
   doc.addPage();
   doc.setFillColor(...CC.hdrBg); doc.rect(0,0,W,H,"F");
   doc.setFillColor(...CC.hdrBg.map(v=>Math.min(255,v+30))); doc.roundedRect(W*0.1,H*0.17,W*0.8,H*0.66,6,6,"F");
-  try{const lpng=getTransparentLogoPng();if(lpng){doc.addImage(lpng,"PNG",W/2-23,H*0.19,46,46);}else{doc.addImage("data:image/jpeg;base64,"+LOGO_B64,"JPEG",W/2-23,H*0.19,46,46);}}catch(e){}
+  placePdfLogo(doc, W/2, H*0.19, 46, {shape:catLogoShape, align:"center"});
   doc.setDrawColor(...CC.accent); doc.setLineWidth(0.7); doc.line(W*0.18,H*0.41,W*0.82,H*0.41);
   doc.setFont("helvetica","bold"); doc.setFontSize(14); doc.setTextColor(...CC.hdrTxt);
   doc.text("Gracias por tu preferencia!",W/2,H*0.47,{align:"center"});
   doc.setFont("helvetica","italic"); doc.setFontSize(9); doc.setTextColor(...CC.accent);
-  doc.text(shopSlogan||"Tú lo piensas, nosotros lo creamos",W/2,H*0.52,{align:"center"});
+  doc.text(shopSlogan||bizCfg().slogan,W/2,H*0.52,{align:"center"});
   doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...CC.hdrTxt);
   const cl=[]; if(shopWa)cl.push("WhatsApp: "+shopWa); if(shopIg)cl.push(shopIg); if(shopAddr)cl.push(shopAddr); cl.push("Envios a todo el pais");
   cl.forEach((l,i)=>doc.text(l,W/2,H*0.57+i*8,{align:"center"}));
@@ -11729,7 +11840,7 @@ async function generateProformaPDF(){
   const notas=document.getElementById("prfNotas").value;
   const gD=parseFloat(document.getElementById("prfDescuento").value)||0;
   const iv=parseFloat(document.getElementById("prfIva").value)||0;
-  const pN=document.getElementById("provNombre").value||"CTRL+P";
+  const pN=document.getElementById("provNombre").value||bizCfg().name;
   const pRuc=document.getElementById("provRuc").value;
   const pTel=document.getElementById("provTel").value;
   const pDir=document.getElementById("provDir").value;
@@ -11748,11 +11859,11 @@ async function generateProformaPDF(){
   // BANDA SUPERIOR
   doc.setFillColor(...DARK); doc.rect(0,0,W,36,"F");
   doc.setFillColor(...GOLD); doc.rect(W-65,0,65,36,"F");
-  try{const lpng=getTransparentLogoPng();if(lpng){doc.addImage(lpng,"PNG",11,5,26,26);}else{doc.addImage("data:image/jpeg;base64,"+LOGO_B64,"JPEG",11,5,26,26);}}catch(e){}
+  placePdfLogo(doc, 11, 5, 26, {shape:catLogoShape, align:"left"});
   doc.setFont("helvetica","bold"); doc.setFontSize(14); doc.setTextColor(252,247,240);
   doc.text(pN.toUpperCase().substring(0,28),41,14);
   doc.setFont("helvetica","italic"); doc.setFontSize(7); doc.setTextColor(...GOLD);
-  doc.text("Tú lo piensas, nosotros lo creamos",41,20);
+  doc.text(bizCfg().slogan,41,20);
   const provLine=[]; if(pTel)provLine.push("WA: "+pTel); if(pDir)provLine.push(pDir); if(pEmail)provLine.push(pEmail);
   doc.setFont("helvetica","normal"); doc.setFontSize(6.5); doc.setTextColor(220,210,200);
   if(provLine.length) doc.text(provLine.join("  |  ").substring(0,60),41,27);
