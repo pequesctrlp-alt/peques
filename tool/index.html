@@ -578,6 +578,22 @@ details.adv-panel .adv-body{padding:0 12px 12px;border-top:1px solid rgba(224,17
   </div>
 </div>
 
+<!-- v1.25.25: AVISO BLOQUEANTE cuando no hay conexión con la nube.
+     La app es online-only: sin conexión no se puede editar (se evita perder datos). -->
+<div id="connOverlay" style="display:none;position:fixed;inset:0;z-index:100000;background:linear-gradient(135deg,#16233f 0%,#24365c 100%);align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:16px;padding:30px 26px;max-width:380px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="font-size:46px;line-height:1;margin-bottom:12px;">📡</div>
+    <h3 style="margin:0 0 8px;font-size:19px;color:#16233f;">Sin conexión con la nube</h3>
+    <p id="connOverlayMsg" style="margin:0 0 18px;font-size:13px;color:#5b6b86;line-height:1.55;">
+      Esta app trabaja solo con conexión para no perder datos. Conéctate a internet y reintenta.
+    </p>
+    <button onclick="retryConnection()" id="connRetryBtn" style="background:#e0117f;color:#fff;border:none;padding:13px 18px;border-radius:9px;font-size:14px;font-weight:600;cursor:pointer;width:100%;letter-spacing:.4px;">
+      Reintentar conexión
+    </button>
+    <button onclick="signOutUser()" style="background:none;border:none;color:#8b97ab;font-size:12px;margin-top:12px;cursor:pointer;text-decoration:underline;">Cerrar sesión</button>
+  </div>
+</div>
+
 <!-- ═══════════════════════════════════════════════════════════
      MODAL — Datos centralizados del negocio (v1.10)
      Centraliza dirección, WhatsApp, Instagram, slogan, datos del
@@ -2006,8 +2022,23 @@ let editingPublicationId = null;
 // ================================================================
 // SUPABASE CLIENT — persistence backend
 // ================================================================
-const APP_VERSION = "1.25.24";
-const APP_BUILD_DATE = "2026-06-03";
+const APP_VERSION = "1.25.26";
+const APP_BUILD_DATE = "2026-06-10";
+// v1.25.26 — FOTOS DE PRODUCTO COMPRIMIDAS (causa raíz del banco que no llegaba a la nube)
+//   • handlePhoto ahora reduce la foto a máx 1000px y JPEG 0.82 ANTES de guardarla.
+//     Antes se guardaba a resolución completa (hasta ~6.7MB en base64): saturaba la cuota
+//     de localStorage y reventaba el upsert de app_settings (payload enorme) → el banco
+//     quedaba solo local y "desaparecía" al recargar / no se sincronizaba con el admin.
+//   • Sube el tope de archivo de 5MB a 12MB (igual se comprime, así no rechaza fotos de celular).
+// v1.25.25 — BANCO MAESTRO ONLINE-ONLY (arregla "guardo y al recargar desaparecen")
+//   • La nube (Supabase) es la ÚNICA fuente de verdad para los productos del banco.
+//   • La carga de productos AHORA ESPERA (await) a la nube antes de pintar y antes de
+//     permitir autosave → se elimina la carrera que escribía un banco vacío en la nube.
+//   • Se elimina el "merge defensivo" que resucitaba productos y el fallback que dejaba
+//     ganar a un estado local parcial/vacío. Si la nube responde, manda la nube tal cual.
+//   • Si NO hay conexión verificada con Supabase, aparece un AVISO BLOQUEANTE (#connOverlay)
+//     y no se puede editar nada (la app solo funciona con conexión, según lo pedido).
+//   • Un guardado a la nube que falle YA NO se oculta: levanta el aviso para que reintentes.
 const SB_URL = 'https://yhxunhgektawsnhmuise.supabase.co'; // ← pega tu Project URL de Supabase
 const SB_KEY = 'sb_publishable_FwsSLxWnukLPl-pWzrAdqw_5Dy8Wp8-'; // ← pega tu anon public key de Supabase
 // session_id dinámico: cuando un usuario se autentica, su user.id reemplaza este valor
@@ -2358,6 +2389,69 @@ function hideAuthOverlay() {
   const ov = document.getElementById('authOverlay');
   if (ov) ov.style.display = 'none';
 }
+
+// ════════════════════════════════════════════════════════════
+// v1.25.25: GATE DE CONEXIÓN (online-only)
+// La app NO permite editar sin conexión verificada a Supabase.
+// ════════════════════════════════════════════════════════════
+let connectionOK = false;
+function showConnGate(msg) {
+  const ov = document.getElementById('connOverlay');
+  if (!ov) return;
+  const m = document.getElementById('connOverlayMsg');
+  if (m && msg) m.textContent = msg;
+  ov.style.display = 'flex';
+}
+function hideConnGate() {
+  const ov = document.getElementById('connOverlay');
+  if (ov) ov.style.display = 'none';
+}
+// Verifica de verdad que se puede leer de la nube. Devuelve true/false.
+async function verifyConnectionNow() {
+  if (!sbClient) { connectionOK = false; return false; }
+  try {
+    const probe = sbClient.from('app_settings').select('session_id').limit(1);
+    const res = await Promise.race([
+      probe,
+      new Promise(resolve => setTimeout(() => resolve({ error: { message: 'timeout' } }), 7000))
+    ]);
+    if (res && res.error) {
+      connectionOK = false;
+      sbConnectionVerified = false;
+      return false;
+    }
+    connectionOK = true;
+    sbConnectionVerified = true;
+    setSbStatus('connected', 'Conectado');
+    return true;
+  } catch (e) {
+    connectionOK = false;
+    sbConnectionVerified = false;
+    return false;
+  }
+}
+// Botón "Reintentar conexión" del aviso bloqueante.
+async function retryConnection() {
+  const btn = document.getElementById('connRetryBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Verificando…'; }
+  if (!sbClient) { try { initSupabase(); } catch (e) {} }
+  const ok = await verifyConnectionNow();
+  if (btn) { btn.disabled = false; btn.textContent = 'Reintentar conexión'; }
+  if (ok) {
+    hideConnGate();
+    try { showToast('✓ Conexión restablecida'); } catch (e) {}
+    // Recargar desde la nube (verdad única) ahora que hay conexión.
+    suppressAutoSave = true;
+    try { await loadFromStorage(); } catch (e) { console.warn('reload tras reconexión:', e); }
+    try { renderProducts(); updateBankStats(); updateCatFilter(); } catch (e) {}
+    setTimeout(() => { suppressAutoSave = false; }, 1200);
+  } else {
+    showConnGate('Aún no hay conexión con la nube. Revisa tu internet y reintenta.');
+  }
+}
+// Si el navegador pierde la red, levantamos el aviso de inmediato.
+window.addEventListener('offline', () => { connectionOK = false; if (currentUser) showConnGate('Se perdió la conexión a internet. Reconéctate para seguir trabajando.'); });
+window.addEventListener('online', () => { if (currentUser) retryConnection(); });
 
 // Mostrar mensaje de error en el form de login
 function showAuthError(msg) {
@@ -2815,18 +2909,26 @@ async function sbSaveSession(sessionData) {
       console.warn('Error guardando en Supabase:', error.message);
       outboxPush('session', 'main', slim);
       const dot = document.getElementById('saveDot');
-      if (dot) { dot.style.background = '#f4b400'; dot.title = 'Pendiente de sincronizar (sin conexión)'; }
-      setSbStatus('error', 'Sin sync — encolado');
+      if (dot) { dot.style.background = '#f4b400'; dot.title = 'No se pudo guardar en la nube'; }
+      setSbStatus('error', 'Sin sync');
+      // v1.25.25 ONLINE-ONLY: un guardado fallido YA NO se oculta. Avisamos de forma
+      // bloqueante para que el usuario reconecte y reintente — así nunca cree que
+      // guardó cuando en realidad el cambio no llegó a la nube.
+      connectionOK = false;
+      if (currentUser) { try { showConnGate('No se pudo guardar en la nube. Revisa tu conexión y reintenta para no perder tus cambios.'); } catch(_){} }
     } else {
       const dot = document.getElementById('saveDot');
       if (dot) { dot.style.background = '#27ae60'; dot.title = 'Sincronizado: ' + new Date().toLocaleTimeString(); }
       sbConnectionVerified = true;
+      connectionOK = true;
       setSbStatus('connected', 'Supabase conectado');
     }
   } catch(e) {
     console.warn('sbSaveSession err:', e);
     outboxPush('session', 'main', sessionData);
-    setSbStatus('error', 'Sin conexión — encolado');
+    setSbStatus('error', 'Sin conexión');
+    connectionOK = false;
+    if (currentUser) { try { showConnGate('Se perdió la conexión al guardar. Reconéctate y reintenta para no perder tus cambios.'); } catch(_){} }
   }
 }
 
@@ -3182,23 +3284,91 @@ function updatePreviewTitle(){
   document.getElementById("previewSub").textContent=document.getElementById("catPublico").value||"";
 }
 function handlePhoto(inp){
-  const f = inp.files[0]; 
+  const f = inp.files[0];
   if (!f) return;
   if (!f.type.startsWith('image/')) { showToast("Selecciona una imagen válida"); inp.value=''; return; }
-  if (f.size > 5*1024*1024) { showToast("La imagen supera 5MB"); inp.value=''; return; }
+  if (f.size > 12*1024*1024) { showToast("La imagen supera 12MB"); inp.value=''; return; }
   const r = new FileReader();
   r.onload = e => {
-    currentPhoto = e.target.result;
-    const p = document.getElementById("photoPreview");
-    if (p) { p.src = currentPhoto; p.classList.add("visible"); }
-    const ph = document.getElementById("photoPlaceholder");
-    if (ph) ph.style.display = "none";
-    showToast("Foto cargada");
+    // v1.25.26: REDUCIR la foto antes de guardarla (máx 1000px por lado, JPEG 0.82).
+    // ANTES se guardaba a resolución completa (hasta ~6.7MB en base64): eso llenaba la
+    // cuota de localStorage (QuotaExceededError) y hacía fallar el upsert de app_settings
+    // a la nube por tamaño → el banco "se guardaba" local pero NUNCA llegaba a la nube
+    // (desaparecía al recargar y no se sincronizaba con el admin). Comprimir lo corta de raíz:
+    // una foto de varios MB queda en ~80-180KB sin pérdida visible para catálogos/posts.
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const max = 1000;
+        let w = img.width, h = img.height;
+        if (w > max || h > max) {
+          const ratio = Math.min(max / w, max / h);
+          w = Math.round(w * ratio); h = Math.round(h * ratio);
+        }
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        currentPhoto = c.toDataURL('image/jpeg', 0.82);
+      } catch (err) {
+        // Si el canvas falla por algo, usamos la original para no romper el flujo.
+        console.warn('No se pudo reducir la foto, usando original:', err);
+        currentPhoto = e.target.result;
+      }
+      const p = document.getElementById("photoPreview");
+      if (p) { p.src = currentPhoto; p.classList.add("visible"); }
+      const ph = document.getElementById("photoPlaceholder");
+      if (ph) ph.style.display = "none";
+      showToast("Foto cargada");
+    };
+    img.onerror = () => { showToast("Error al procesar la imagen"); inp.value=''; };
+    img.src = e.target.result;
   };
   r.onerror = () => { showToast("Error al leer imagen"); inp.value=''; };
   r.readAsDataURL(f);
   // Reset value para poder volver a subir la misma foto
   setTimeout(() => { inp.value = ''; }, 100);
+}
+
+// v1.25.26: OPTIMIZADOR de fotos pesadas YA guardadas en el banco.
+// Los productos creados antes de esta versión pueden tener fotos a resolución completa
+// (varios MB) que impiden que el banco llegue a la nube. Esta función las reduce en
+// memoria (máx 1000px / JPEG 0.82) y guarda UNA sola vez. Es idempotente: tras reducir,
+// las fotos quedan pequeñas y la próxima llamada no encuentra nada que optimizar.
+async function optimizeProductPhotos(){
+  try{
+    if (!Array.isArray(products) || !products.length) return;
+    const HEAVY = 250 * 1024; // ~250KB en base64 = claramente sin comprimir
+    const heavy = products.filter(p => p && typeof p.photo === 'string' && p.photo.length > HEAVY);
+    if (!heavy.length) return;
+    const downscale = (dataUrl) => new Promise((resolve) => {
+      try{
+        const img = new Image();
+        img.onload = () => {
+          try{
+            const max = 1000;
+            let w = img.width, h = img.height;
+            if (w > max || h > max){ const r = Math.min(max/w, max/h); w = Math.round(w*r); h = Math.round(h*r); }
+            const c = document.createElement('canvas'); c.width = w; c.height = h;
+            c.getContext('2d').drawImage(img, 0, 0, w, h);
+            resolve(c.toDataURL('image/jpeg', 0.82));
+          }catch(e){ resolve(null); }
+        };
+        img.onerror = () => resolve(null);
+        img.src = dataUrl;
+      }catch(e){ resolve(null); }
+    });
+    let changed = 0;
+    for (const p of heavy){
+      const small = await downscale(p.photo);
+      if (small && small.length < p.photo.length){ p.photo = small; changed++; }
+    }
+    if (changed){
+      try { renderProducts(); } catch(e){}
+      try { showToast(`🪶 Optimicé ${changed} foto${changed>1?'s':''} pesada${changed>1?'s':''} del banco`); } catch(e){}
+      // Guardar una vez: el blob ya es pequeño, así que esta vez SÍ llega a la nube.
+      try { saveToStorage(); } catch(e){ console.warn('save tras optimizar:', e); }
+    }
+  }catch(e){ console.warn('optimizeProductPhotos:', e); }
 }
 function addProduct(){
   const name=document.getElementById("prodName").value.trim();
@@ -4622,7 +4792,9 @@ async function loadFromStorage(){
     // se desactiva mientras esperamos respuesta para evitar que el debounce
     // sobreescriba en la nube datos válidos con un estado parcial.
     suppressSbSyncUntil = Date.now() + 8000;
-    (async () => {
+    // v1.25.25: AHORA SE ESPERA (await) a la nube antes de continuar. Así el arranque no
+    // sigue de largo y el autosave no escribe un banco vacío encima de la nube buena.
+    await (async () => {
       // Esperar hasta 5s a que la verificación de conexión termine.
       // Si el badge ya es verde, esto retorna casi instantáneamente.
       const waitVerified = async () => {
@@ -4632,18 +4804,21 @@ async function loadFromStorage(){
         }
         return sbConnectionVerified;
       };
-      const verified = await waitVerified();
+      let verified = await waitVerified();
+      // v1.25.25: si la verificación pasiva no llegó, intentamos una prueba activa.
+      if (!verified) { verified = await verifyConnectionNow(); }
       if (!verified) {
-        console.warn('Supabase no se verificó a tiempo — saltando carga remota');
-        // v1.25.18: como diferimos los productos esperando la nube y ésta no respondió,
-        // aplicamos los locales ahora (respaldo offline) para no dejar el banco vacío.
-        if (s && Array.isArray(s.products)) {
-          products = s.products || [];
-          try { renderProducts(); updateBankStats(); updateCatFilter(); } catch(e){}
-        }
+        // v1.25.25 ONLINE-ONLY: sin conexión verificada NO pintamos datos locales y NO
+        // dejamos editar. Mostramos el aviso bloqueante para que el usuario reconecte.
+        // De este modo nunca se persiste un estado parcial que borre la nube.
+        console.warn('Supabase no verificado — modo online-only: bloqueando edición');
+        connectionOK = false;
+        if (currentUser) showConnGate('No se pudo conectar con la nube. Conéctate a internet y reintenta.');
         suppressSbSyncUntil = 0;
         return;
       }
+      connectionOK = true;
+      hideConnGate();
       try {
         const withTimeout = (promise) => Promise.race([
           promise,
@@ -4664,37 +4839,13 @@ async function loadFromStorage(){
         });
 
         let didApply = false;
-        // v1.25.11 / v1.25.17: protección contra pérdida de productos, corregida.
-        // Distinguimos dos cosas que antes se confundían:
-        //   • sbData === null  → la lectura falló o NO existe fila (usuario nuevo): se
-        //     maneja más abajo conservando lo local. NO entra a este bloque.
-        //   • sbData con products = []  → la fila EXISTE y dice explícitamente "0
-        //     productos". Es un estado deliberado (p.ej. negocio vaciado a propósito).
-        //     En ese caso la nube manda y NO resucitamos los locales (antes sí lo hacía,
-        //     y por eso un negocio limpiado reaparecía al recargar).
+        // v1.25.25 ONLINE-ONLY: la nube es la ÚNICA verdad para el banco de productos.
+        // Ya NO mezclamos con local ni resucitamos productos: lo que diga la nube, manda.
+        // (El "merge defensivo" anterior reinyectaba locales y, combinado con la carrera de
+        // autosave, causaba que un banco recién guardado reapareciera y luego se sobrescribiera
+        // vacío. Al confiar solo en la nube, "guardo → recargo → siguen ahí" funciona siempre.)
         if (sbData && Array.isArray(sbData.products)) {
-          const localProds = (s && Array.isArray(s.products)) ? s.products : [];
-          const cloudProds = sbData.products;
-          if (cloudProds.length === 0) {
-            // Nube vacía y AUTORITATIVA → el negocio queda sin productos.
-            console.log('Nube vacía (fila existente) — autoridad: negocio sin productos.');
-            sbData.products = [];
-          } else if (localProds.length > cloudProds.length) {
-            // La nube tiene MENOS pero >0 → posible lectura parcial: merge defensivo.
-            console.warn(`⚠ Nube ${cloudProds.length} < local ${localProds.length}. Merge defensivo.`);
-            const cloudIds = new Set(cloudProds.map(p => p.id));
-            const localOnly = localProds.filter(p => !cloudIds.has(p.id));
-            sbData.products = [...cloudProds, ...localOnly];
-            try { showToast(`📤 Sincronizando ${localOnly.length} producto${localOnly.length>1?'s':''} pendiente${localOnly.length>1?'s':''}`); } catch(e){}
-          } else if (localProds.length > 0) {
-            // Ambos con datos (nube ≥ local) → merge por id para no perder locales únicos.
-            const cloudIds = new Set(cloudProds.map(p => p.id));
-            const localOnly = localProds.filter(p => !cloudIds.has(p.id));
-            if (localOnly.length > 0) {
-              console.log(`Merge: ${cloudProds.length} nube + ${localOnly.length} local-only`);
-              sbData.products = [...cloudProds, ...localOnly];
-            }
-          }
+          // sbData.products se usa tal cual (incluido [] = negocio sin productos).
         }
         // v1.25.11: si sbData es null O no tiene products pero local SÍ los tiene,
         // NO entrar al applyLoadedState(sbData) — los productos locales ya están
@@ -4836,11 +4987,15 @@ async function loadFromStorage(){
         // applyLoadedState ya re-renderiza productos/catálogo si se llamó arriba;
         // pero si solo llegaron listas (catalogs/proformas/pubs) y no sesión,
         // forzamos un refresh suave de las pestañas que dependen de esas listas.
-        // v1.25.18: si la nube NO aplicó productos (sin fila válida, timeout, o respuesta
-        // sin products) y los diferimos esperando reconciliación, los aplicamos ahora como
-        // respaldo para no dejar el banco vacío. Si la nube SÍ aplicó (didApply), se respeta.
-        if (!didApply && s && Array.isArray(s.products)) {
+        // v1.25.25 ONLINE-ONLY: la nube manda. Solo usamos local si NO existe fila en la
+        // nube todavía (negocio recién creado, sbData === null) → así el primer banco se
+        // muestra y se sube. Si la nube respondió (aunque venga sin products), NO resucitamos
+        // local: el banco refleja exactamente lo que hay en la nube.
+        if (!didApply && !sbData && s && Array.isArray(s.products)) {
           products = s.products || [];
+          try { renderProducts(); updateBankStats(); updateCatFilter(); } catch(e){}
+        } else if (!didApply && sbData && !Array.isArray(sbData.products)) {
+          products = [];
           try { renderProducts(); updateBankStats(); updateCatFilter(); } catch(e){}
         }
 
@@ -4848,6 +5003,11 @@ async function loadFromStorage(){
           if (typeof renderPrfList === 'function') { try { renderPrfList(); } catch(e) {} }
           if (typeof renderPubProdList === 'function') { try { renderPubProdList(); } catch(e) {} }
           if (typeof showToast === 'function') showToast('Datos sincronizados desde la nube');
+        }
+        // v1.25.26: tras cargar de la nube, optimizar fotos pesadas heredadas (una vez,
+        // pasada la ventana de supresión de autosave para que el re-guardado sí suba).
+        if (connectionOK && currentUser) {
+          setTimeout(() => { try { optimizeProductPhotos(); } catch(e){} }, 3000);
         }
       } catch(e) { console.warn('Supabase background load failed:', e); }
       finally { suppressSbSyncUntil = 0; }
